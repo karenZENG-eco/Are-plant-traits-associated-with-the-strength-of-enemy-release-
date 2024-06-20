@@ -1,0 +1,1736 @@
+---
+title: "5 Data Analysis Traits"
+output: 
+---
+
+This is the code used to analyse data for the biocontrol and enemy release literature compilation project.
+
+In this notebook we will:
+1. Create a list of terrestrial plant species from enemy release dataset.
+
+2. Match traits to species and synthesise trait information between multiple datasets. 
+For each data source we:
+a) load in data
+b) filter based on enemy release list
+c) output a table of trait definitions/values (and manually review them)
+d) input a table of trait definition/values with decisions on how to combine data
+e) produce a singular value per species for each analysed trait.
+f) append info to the main enemy release dataset
+
+Note that we did these steps individually rather than using a function to better unify data sources despite differing format and complexities.
+
+3. Identify the plant traits that are most correlated with strong enemy release
+#Packages and Data
+
+```{r}
+library(tidyverse)
+library(rtry) #reading TRY database
+library(austraits) #reading AUSTRAITS database
+library(rgbif) #access GBIF database
+
+library(ggplot2) #graphs
+library(car) #anovas
+library(ggpubr) #themes
+```
+
+Enemy Release
+```{r}
+data_main <- read_csv( "./output/data_main_final.csv")
+
+data_main$match_species <- data_main$study_species
+
+data_main$match_species[156] <- "Acer platanoides" #was subsp
+data_main$match_species[159] <- "Acalypha wilkesiana"
+data_main$match_species[166] <- "Eugenia cerasiflora" #(Kiaersk.) from source
+data_main$match_species[186:188] <- "Calamagrostis arenaria"
+data_main$match_species[207:213] <- "Calamagrostis arenaria"
+data_main$match_species[235] <- "Lonicera xylosteum"
+data_main$match_species[322:326] <- "Mus musculus" #was subsp
+data_main$match_species[347] <- "Fallopia japonica"
+data_main$match_species[349] <- "NA" #too vague
+data_main$match_species[351] <- "NA" #too vague
+data_main$match_species[363] <- "Osteospermum moniliferum" #subsp and also new syn
+data_main$match_species[564] <- "NA" #cannot determine which synonym to use
+data_main$match_species[568] <- "Erythranthe guttata"
+data_main$match_species[583] <- "NA" #cannot determine which synonym to use
+
+gbif_checklist <- name_backbone_checklist(data_main$match_species) #match
+
+data_main <- bind_cols(data_main, gbif_checklist[, 3])#append matched species name
+
+data_plant <- data_main %>% filter(species_type == "p") %>% filter(system == "t")
+rm(data_main, gbif_checklist)
+```
+
+##Produce list of species to filter other datasets with
+```{r}
+species_list <- unique(data_plant$canonicalName)
+```
+
+Traits: TRY, Austraits and [look for other trait databases]
+
+##TRY species match and load
+
+Make a list of species codes to request from TRY
+```{r}
+try_plantlist <- read_tsv("./data/TryAccSpecies.txt")
+
+try_requestlist <- try_plantlist %>% filter(try_plantlist$AccSpeciesName %in% data_plant$canonicalName)
+
+paste0( try_requestlist$AccSpeciesID, collapse=",")
+```
+
+load in dataset after request was approved
+```{r}
+data_try <- rtry_import("./data/TRY/31886.txt")
+```
+
+
+##AusTraits prepare dataset
+```{r}
+austraits <- load_austraits(version = "3.0.2", path = "data/austraits")
+```
+
+##FunANDES
+
+Read in funANDES
+```{r}
+funAndes <- read.csv("./data/fundb_TRY_open_20220428.csv")
+
+table(unique(funAndes$SpeciesName) %in% species_list) #one extra species in Andes dataset
+```
+
+filter out species not in our list and look at what is there
+```{r}
+funAndes <- funAndes %>% filter(SpeciesName %in% species_list)
+```
+
+Seems like this dataset will add SLA for Eugenia uniflora.
+
+Remember to find and add an appropriate reference to the Madidi Project by JuanSebastian.Tello@mobot.org to the list of sources.
+
+```{r}
+funAndes <- funAndes %>% filter(OriginalName == "Leaf area per leaf dry mass (specific leaf area, SLA or 1/LMA): petiole included")
+
+funAndes <- funAndes %>% summarise(canonicalName = "Eugenia uniflora", mean_SLA = mean(as.numeric(OrigValueStr)))
+```
+
+
+##China Plant Traits Database Version 2
+
+Read in relevant data from the China Plant Traits Database
+
+identify relevant taxa
+```{r}
+cptd_taxa <- read.csv("./data/ChinaPlantTraitsDatabaseV2/Taxonomic standardisation.csv")
+
+cptd_taxa$genusspecies <- paste0(cptd_taxa$ACCEPTED.GENUS," ", cptd_taxa$ACCEPTED.SPECIES)
+
+cptd_taxa$genusspecies <- gsub(cptd_taxa$genusspecies, pattern = "<ca>", replacement = " ")
+
+cptd_taxa <- cptd_taxa %>% filter(genusspecies%in% species_list)
+```
+
+match records to main database
+```{r}
+cptd_main <- read.csv("./data/ChinaPlantTraitsDatabaseV2/Species translations.csv")
+
+cptd_main <- cptd_main %>% filter(SPECIES.ID %in% cptd_taxa$SPECIES.ID)
+
+cptd_main$canonicalName <- paste0(cptd_main$ACCEPTED.GENUS," ", cptd_main$ACCEPTED.SPECIES)
+
+cptd_main <- cptd_main[,6:8]
+
+rm(cptd_taxa)
+```
+
+##EuDiS 
+European Dispersal Syndrome dataset from https://doi.org/10.3897/BDJ.11.e104079
+```{r}
+data_eudis <- read_csv2("./data/EuDiS.csv")
+```
+
+#Data wrangling
+
+#Dispersal Syndromes
+
+###TRY
+
+Notice and filter out mislabeled seed weight notes in dispersal data
+```{r}
+data_try_dispersal <- data_try %>% filter(TraitID == 28)
+data_try_dispersal <- data_try_dispersal %>% filter(OriglName != "Seed Weight Notes")
+```
+
+Convert to all lower case
+```{r}
+data_try_dispersal$OriglName <- tolower(data_try_dispersal$OriglName)
+data_try_dispersal$OrigValueStr <- tolower(data_try_dispersal$OrigValueStr)
+```
+
+Count the number of species with info
+```{r}
+length(unique(data_try_dispersal$AccSpeciesName))
+unique(data_try_dispersal$AccSpeciesName)
+```
+
+Start list of references
+```{r}
+reference_table <- data.frame(primary = unique(data_try_dispersal$Reference), secondary = "try") #note down secondary data source as well as primary because it will help us reformat them later
+```
+
+Make a list of all definitions based on number of records
+```{r}
+definitions_try_dispersal <- data_try_dispersal %>% count(OrigValueStr) %>% arrange(desc(n))
+
+write_csv(definitions_try_dispersal, "./output/definitions_try_dispersal.csv")
+rm(definitions_try_dispersal)
+```
+
+We manually looked through the definitions and assigned them a general and specific dispersal syndrome.
+
+Reload definitions file and use it to identify the most commonly assigned dispersal syndrome (Note that definitions across all sources have been added to one document for ease of access and so this file will be longer than the written file.)
+```{r}
+definitions_dispersal <- read_csv("./data/trait_definitions/definitions_dispersal_syndrome.csv")
+definitions_try_dispersal <- definitions_dispersal %>% filter(original_source == "try") %>% dplyr::mutate(original_value, dispersal_syndrome2, .keep = "none")
+```
+
+Append new definitions to TRY data and attempt to determine the most common dispersal syndrome assigned to each species with only the 50 most common definitions categorised
+```{r}
+data_try_dispersal <- left_join(data_try_dispersal, definitions_try_dispersal, by = c("OrigValueStr" = "original_value"))
+
+data_try_dispersal <- data_try_dispersal %>% group_by(AccSpeciesName) %>% count(dispersal_syndrome2) %>% filter(!is.na(dispersal_syndrome2)) #count number of each type of dispersal recorded per species
+
+data_try_dispersal$n[data_try_dispersal$dispersal_syndrome2 == "anthropogenic"] <- data_try_dispersal$n[data_try_dispersal$dispersal_syndrome2 == "anthropogenic"]/100 #minimise the weighting of anthropogenic dispersal
+
+data_try_dispersal <- data_try_dispersal %>% group_by(AccSpeciesName)%>% slice_max(n)
+
+data_try_dispersal %>% group_by(AccSpeciesName) %>% filter(n()>1)
+```
+It worked, but we must still manually resolve ties.
+
+We will decide these ties based the following order from most to least likely dispersal syndrome, favouring less specific groupings (eg. zoochory other over a specific type of zoochory) and only using "anthropogenic" as a last resort.
+wind > zoochory other > endozoochory > epizoochory > nonspecific > ... > anthropogenic
+
+```{r}
+temp_weight <- data_frame(dispersal_syndrome2 = c("wind", "zoochory_other", "endozoochory", "epizoochory", "nonspecific", "anthropogenic"), modifier = c(5, 4, 3, 2, 1, -1))
+
+data_try_dispersal <- left_join(data_try_dispersal, temp_weight )
+
+data_try_dispersal <- data_try_dispersal %>% group_by(AccSpeciesName) %>% slice_max(n + modifier)
+
+data_try_dispersal %>% group_by(AccSpeciesName) %>% filter(n()>1) #check whether there are duplicates
+```
+
+clean up environment
+```{r}
+data_try_dispersal <- data_try_dispersal[, 1:2] #remove slicing info
+
+rm(definitions_try_dispersal, temp_weight )
+```
+
+##EuDiS 
+
+```{r}
+unique(data_eudis$Species_Flora_Europaea[data_eudis$Species_Flora_Europaea %in% species_list])
+```
+
+```{r}
+data_eudis <- data_eudis %>% filter(data_eudis$Species_Flora_Europaea %in% species_list)
+```
+
+add eudis references to 
+```{r}
+eudis_refs <- data.frame(primary = data_eudis$References, secondary = "eudis") %>% filter(!is.na(primary))
+```
+
+
+```{r}
+table(data_eudis$Species_Flora_Europaea %in% data_try_dispersal$AccSpeciesName)
+
+definitions_dispersal_eudis <- definitions_dispersal %>% filter(original_source == "eudis")%>% dplyr::mutate(original_value, dispersal_syndrome2, .keep = "none")
+```
+Yes, the eudis dataset will add at least 7 dispersal records not available in TRY so we will include it in our dataset. Eudis allows for multiple dispersal mechanisms per species but we only have 8 records so it isn't worth making a filtering system.
+
+```{r}
+data_eudis <- data_eudis %>% filter(data_eudis$Species_Flora_Europaea %in% data_try_dispersal$AccSpeciesName == F)
+
+```
+
+Manually rewrite data frame because it was easier
+```{r}
+data_eudis <- data.frame(canonicalName = c(data_eudis$Species_Flora_Europaea), dispersal_syndrome2 = c("nonspecific", "nonspecific", "wind", "wind", "nonspecific", "wind", "nonspecific"))
+```
+
+Add eudis to reference list
+```{r}
+reference_table <- bind_rows(reference_table, eudis_refs)
+```
+
+clean the environment
+```{r}
+rm(definitions_dispersal_eudis)
+```
+
+##AusTraits
+
+extract dispersal and filter by species
+```{r}
+data_austraits_dispersal <- extract_trait(austraits, "dispersal_syndrome")[["traits"]]
+data_austraits_dispersal <- data_austraits_dispersal %>% filter(taxon_name %in% species_list)
+
+definitions_austraits_dispersal <- data_austraits_dispersal %>% count(value) %>% arrange(desc(n))
+```
+
+Make a list of all definitions based on number of records
+```{r}
+write_csv(definitions_austraits_dispersal, "./output/definitions_austraits_dispersal.csv")
+```
+
+Read in the amended list of definitions
+```{r}
+definitions_austraits_dispersal <- definitions_dispersal %>% filter(original_source == "austraits")%>% dplyr::mutate(original_value, dispersal_syndrome2, .keep = "none")
+```
+
+Add references to list before we remove them
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_austraits_dispersal$dataset_id), secondary = "austraits"))
+```
+
+Link new definitions with each record and find the most common dispersal syndrome for each species
+```{r}
+data_austraits_dispersal <- left_join(data_austraits_dispersal, definitions_austraits_dispersal, by = c("value" = "original_value"))
+
+data_austraits_dispersal <- data_austraits_dispersal %>% group_by(taxon_name) %>% count(dispersal_syndrome2) %>% filter(!is.na(dispersal_syndrome2)) %>% slice_max(n)#take the most common record only
+```
+
+Exclude species that are covered already to minimise extra work
+```{r}
+data_austraits_dispersal <- data_austraits_dispersal %>% filter(taxon_name %in% data_try_dispersal$AccSpeciesName == F)
+
+data_austraits_dispersal
+```
+This is much easier, fold together the conflicting epizoochory/zoochory_other of Acacia pravissima into epizoochory.
+
+```{r}
+data_austraits_dispersal <- data_austraits_dispersal[-2, 1:2]
+data_austraits_dispersal
+```
+clean up before final join
+```{r}
+rm(definitions_dispersal)
+colnames(data_austraits_dispersal)[1] <- "canonicalName"
+```
+
+##Combination
+```{r}
+data_plant <- left_join(data_plant, data_try_dispersal, by = c("canonicalName" = "AccSpeciesName"))
+data_plant <- rows_update(data_plant, data_eudis, unmatched = "ignore") #pref austraits
+data_plant <- rows_update(data_plant, data_austraits_dispersal, unmatched = "ignore") #pref eudis
+
+rm(data_try_dispersal, data_eudis, data_austraits_dispersal)
+
+data_plant$dispersal_syndrome1 <- data_plant$dispersal_syndrome2
+
+data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "ballochory"] = "autochory"
+data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "endozoochory"] = "zoochory"
+data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "epizoochory"] = "zoochory"
+data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "nonspecific"] = "autochory"
+#data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "water"] = "water"
+#data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "wind"] = "wind"
+data_plant$dispersal_syndrome1[data_plant$dispersal_syndrome2 == "zoochory_other"] = "zoochory"
+
+table(data_plant$dispersal_syndrome2, useNA = "ifany")
+table(data_plant$dispersal_syndrome1, useNA = "ifany")
+```
+
+```{r}
+rm(definitions_austraits_dispersal, eudis_refs, data_eudis)
+```
+
+
+#Clonality
+Determine whether the data is likely to mean that a species is vegetatively clonal or not
+
+##TRY
+Look at what data is available
+```{r}
+data_try_clonal <- data_try %>% filter(TraitID == "341" | TraitID == "357" | TraitID == "208")
+
+definitions_try_clonal <- data_try_clonal %>% group_by(Dataset, OriglName, OrigValueStr)%>% summarise(n = n()) %>% arrange(desc(n))
+```
+
+Save to check definitions
+```{r}
+write_csv(definitions_try_clonal, "./output/definitions_try_clonal.csv")
+```
+
+Reload definitions
+```{r}
+definitions_clonal <- read_csv( "./data/trait_definitions/definitions_clonal.csv")
+
+definitions_try_clonal <- definitions_clonal %>% filter(original_source == "try") %>% filter(valid_yn == 1) %>% filter(duplicate == 0) %>% dplyr::mutate(original_value, clonal_disp_yn, clonal_cat, .keep = "none")
+
+data_try_clonal <- left_join(data_try_clonal, definitions_try_clonal, by = c("OrigValueStr" = "original_value"))
+```
+
+Take references
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_try_clonal$Reference), secondary = "try"))
+```
+
+summarise
+```{r}
+data_try_clonal <- data_try_clonal %>% group_by(AccSpeciesName) %>% count(clonal_cat) %>% filter(!is.na(clonal_cat)) #count number of each type of dispersal recorded per species
+
+data_try_clonal <- data_try_clonal %>% group_by(AccSpeciesName)%>% slice_max(n)
+
+data_try_clonal %>% group_by(AccSpeciesName) %>% filter(n()>1) #check for ties
+```
+Decide ties towards the recorded presence of clonality over its absence
+```{r}
+temp_weight <- data_frame(clonal_cat = c("yes", "possible", "no"), modifier = c(1, 0, -1))
+
+data_try_clonal <- left_join(data_try_clonal, temp_weight)
+
+data_try_clonal <- data_try_clonal %>% group_by(AccSpeciesName) %>% slice_max(n + modifier)
+
+data_try_clonal %>% group_by(AccSpeciesName) %>% filter(n()>1) #check for ties
+```
+append to data_plant
+```{r}
+data_plant <- left_join(data_plant, data_try_clonal[, 1:2], by = c("canonicalName" = "AccSpeciesName"))
+rm(data_try_clonal, definitions_clonal, definitions_try_clonal, temp_weight)
+```
+
+
+##Austraits
+dispersal_syndrome == "dispersal_rare"
+```{r}
+data_austraits_clonal1 <- extract_trait(austraits, "dispersal_syndrome")[["traits"]] %>% filter(value == "dispersal_rare") %>% filter(taxon_name %in% species_list)
+```
+
+life_history == "indefinite" but manual check needed
+```{r}
+data_austraits_clonal2 <- extract_trait(austraits, "life_history")[["traits"]] %>% filter(value == "indefinite") %>% filter(taxon_name %in% species_list)
+```
+
+pollination_syndrome == "pollination_rare"
+
+```{r}
+data_austraits_clonal3 <- extract_trait(austraits, "pollination_syndrome")[["traits"]] %>% filter(value == "pollination_rare") %>% filter(taxon_name %in% species_list)
+```
+
+We only found one record for which we had both enemy release and clonality information for. Additional reading on this record indicates that vegetative reproduction is indeed important for the distribution of phragmites australis but that it is also very able to reproduce via seed (Reale et al 2011, Albert et al 2015). This is already reflected in the TRY data though so I will not add the redundant data.
+
+```{r}
+rm(data_austraits_clonal1, data_austraits_clonal2, data_austraits_clonal3)
+```
+
+#Leaf Toughness (LMA/SLA)
+
+##TRY
+```{r}
+data_try_sla <- data_try %>% filter(TraitID == 3117) %>% filter(SpeciesName %in% species_list) #SLA
+data_try_lma
+```
+
+explore for inconsistencies
+```{r}
+#records per units
+table(data_try_sla$OrigUnitStr)
+#records per'value kind'
+table(data_try_sla$ValueKindName)
+#records per original trait name
+#table(data_try_sla$OriglName)
+table(data_try_sla$UnitName)
+
+#how many species do we have precalculated means
+length(unique(data_try_sla$AccSpeciesName[data_try_sla$ValueKindName == "Mean" | data_try_sla$ValueKindName == "Best estimate" ]))
+```
+There are not that many species with pre-calculated averages but records have been standardised which helps processing.
+
+Before summarising the data, let's take all the references
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_try_sla$Reference), secondary = "try"))
+```
+
+Checking for outliers
+```{r}
+plot(data_try_sla$StdValue)
+```
+check for strange occurences
+```{r}
+data_try_sla %>% slice_max(StdValue, n = 10)
+data_try_sla %>% slice_min(StdValue, n = 10)
+
+data_try_sla %>% filter(is.na(StdValue))
+```
+
+We have one strange value which is double that of the rest of the records, one zero and a few NAs.
+
+Exclude them based on observation IDs.
+```{r}
+data_try_sla <- data_try_sla %>% filter(!is.na(StdValue))%>% #exclude NAs
+  filter(StdValue != 0) %>% #exclude zeroes
+  filter(ObservationID != 3012210) #exclude the one excessively large number
+```
+
+To weight database averages and individual records relatively evenly, we'll first take dataset*species means for everything that isn't already a mean. Then we'll take the means of each species for a final SLA value,
+```{r}
+data_try_sla_singletomean <- data_try_sla %>% filter(ValueKindName != "Mean") %>% group_by(AccSpeciesName, Dataset) %>% summarise(mean_SLA = mean(StdValue, na.rm = T))
+
+data_try_sla_mean <- data_try_sla %>% filter(ValueKindName != "Mean") %>% mutate(AccSpeciesName, Dataset, mean_SLA = StdValue, .keep = "none")
+
+data_try_sla <- bind_rows(data_try_sla_singletomean, data_try_sla_mean)
+
+data_try_sla <- data_try_sla %>% group_by(AccSpeciesName)%>% summarise(mean_SLA = mean(mean_SLA, na.rm = T))
+
+rm(data_try_sla_singletomean, data_try_sla_mean)
+plot(data_try_sla$mean_SLA)
+```
+This leaves us with 138 species SLA data points from TRY.
+
+
+##Austraits
+```{r}
+data_austraits_sla <- extract_trait(austraits, "specific_leaf_area")[["traits"]] #SLA
+
+data_austraits_sla <- data_austraits_sla %>% filter(taxon_name %in% species_list) #filter by species list
+
+data_austraits_sla <- data_austraits_sla %>% filter(taxon_name %in% data_try_sla == F)#exclude species covered by TRY
+
+length(unique(data_austraits_sla$taxon_name))#check how many species there are
+plot(data_austraits_sla$value) #check the distribution
+```
+We'll add 29 species by including austraits! But there seems to be a section of the table with unsually high SLA values?
+
+It seems to be a discrepancy between how acacia leaves are measured, so somewhere between multi-pinnate leaves and thick phyllodes? We don't have the resources to consider each case of compound leaf though, so the average should do as a measure of leaf toughness defense between species.
+
+```{r}
+data_austraits_sla <- data_austraits_sla %>% group_by(taxon_name) %>% summarise(mean_SLA = mean(value, n.rm = T))
+
+colnames(data_austraits_sla)[1] <- "canonicalName"
+```
+
+##funAndes
+
+```{r}
+funAndes
+```
+
+
+##CPTD
+read in file containing SLA and grab the context based on the main lookup table prepared beforehand
+```{r}
+cptd_sla <- read.csv("./data/ChinaPlantTraitsDatabaseV2/Chemical traits.csv")
+
+cptd_sla <- cptd_sla %>% filter(SAMPLE.ID %in% cptd_main$SAMPLE.ID)
+
+cptd_sla <- left_join(cptd_sla, cptd_main, by = join_by(SAMPLE.ID))
+
+cptd_sla <- cptd_sla %>% filter(!is.na(SLA))%>% group_by(canonicalName) %>% summarise(mean_SLA = mean(SLA))
+```
+
+
+Add SLA to main dataframe
+```{r}
+data_plant <- left_join(data_plant, data_try_sla, by = c("canonicalName" = "AccSpeciesName"))
+data_plant <- rows_patch(data_plant, data_austraits_sla, unmatched = "ignore") #updates only rows with NA values
+data_plant <- rows_patch(data_plant, funAndes, unmatched = "ignore")
+data_plant <- rows_patch(data_plant, cptd_sla, unmatched = "ignore")
+table(is.na(data_plant$mean_SLA))
+```
+```{r}
+rm(data_austraits_sla, data_try_sla, cptd_sla, funAndes)
+```
+
+#DEPRECATED Plant Defences (GENERAL, deprecated because there wasn't enough info to separate groups)
+
+##TRY
+```{r}
+data_try_defence <- data_try %>% filter(TraitID == 677| #leaf emergences
+                                        TraitID == 1256| #stem emergences
+                                        TraitID == 345| #general physical defence
+                                        TraitID == 333| #ash
+                                        TraitID == 1184| #latex
+                                        TraitID == 346 | #general chemical defences
+                                        TraitID == 835) %>% #bark 2ndary exudates
+  filter(SpeciesName %in% species_list)
+```
+
+append reference sources
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_try_defence$Reference), secondary = "try"))
+```
+
+Separate numeric and categorical records
+```{r}
+data_try_defence %>% filter(!is.na(as.numeric(as.character(data_try_defence$OrigValueStr))))
+```
+
+Because there are only 12 numeric values, we will not save much time separating them from the categorical ones.
+
+Output a list of values to manually reinterperet as binary yes/no for a variety of defences
+```{r}
+definitions_try_defence <- data_try_defence %>% group_by(DataName, OriglName, OrigValueStr)%>% summarise(n = n()) %>% arrange(desc(n))
+
+write_csv(definitions_try_defence , "./output/definitions_try_defence.csv")
+rm(definitions_try_defence)
+```
+
+Read definitions back in???
+```{r}
+definitions_physicaldefence <- read_csv("./data/trait_definitions/definitions_physicaldefence.csv")
+
+definitions_physicaldefence_try <- definitions_physicaldefence %>% filter(original_source == "try") %>% filter(valid_yn == 1) %>% mutate(original_value, defence_yn, .keep = "none")
+
+data_try_physical <- left_join(data_try_physical, definitions_physicaldefence_try, by = c("OrigValueStr" = "original_value"))
+
+rm(definitions_physicaldefence_try)
+```
+
+
+#Plant Defences (physical)
+
+##TRY
+```{r}
+#data_try <- rtry_import("./data/TRY/31886.txt") #read try data in again if needed
+data_try_physical <- data_try %>% filter(TraitID == 677 | TraitID == 1256 | TraitID == 345) #leaf emergences, stem emergences and general physical defence
+```
+
+append reference sources
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_try_physical$Reference), secondary = "try"))
+```
+
+Output a list of values to reinterperet as binary yes/no physical defence
+```{r}
+definitions_try_physical <- data_try_physical %>% count(OrigValueStr, DataName) %>% arrange(desc(n))
+
+write_csv(definitions_try_physical , "./output/definitions_try_physical.csv")
+rm(definitions_try_physical)
+```
+
+Read definitions back in
+```{r}
+definitions_physicaldefence <- read_csv("./data/trait_definitions/definitions_physicaldefence.csv")
+
+definitions_physicaldefence_try <- definitions_physicaldefence %>% filter(original_source == "try") %>% filter(valid_yn == 1) %>% mutate(original_value, original_trait, hairs, spines, .keep = "none")
+
+data_try_physical <- left_join(data_try_physical, definitions_physicaldefence_try, by = c("OrigValueStr" = "original_value", "DataName" = "original_trait"))
+
+rm(definitions_physicaldefence_try)
+```
+
+Group into species and set hairs and spines
+
+first ifelse()
+If all values are NA, then return NA
+If not all values are NA, then return the sum of those values (removing NAs)
+
+second ifelse()
+if any records report hair (n > 0), return 1
+if no records report hair but one or more records report no hair (n = 0), return 0
+
+
+```{r}
+data_try_physical <- 
+  data_try_physical %>% group_by(AccSpeciesName) %>% 
+  summarise(hairs = ifelse(all(is.na(hairs)), NA, ifelse(sum(hairs, na.rm=TRUE) > 0, 1, 0)), 
+            spines = ifelse(all(is.na(spines)), NA, ifelse(sum(spines, na.rm=TRUE) > 0, 1, 0)))
+```
+
+
+##AusTraits
+```{r}
+data_austraits_physicaldef <- extract_trait(austraits, "physical_defence")[["traits"]] %>% filter(taxon_name %in% species_list)
+
+data_austraits_spines <- extract_trait(austraits, "spinescence")[["traits"]] %>% filter(taxon_name %in% species_list)
+```
+
+```{r}
+data_austraits_physical <- bind_rows(data_austraits_physicaldef, data_austraits_spines)
+
+definitions_austraits_physical <- data_austraits_physical%>% count(value) %>% arrange(desc(n))
+
+write_csv(definitions_austraits_physical, "./output/definitions_data_austraits_physical.csv")
+
+rm(definitions_austraits_physical, data_austraits_physicaldef, data_austraits_spines)
+```
+
+```{r}
+definitions_physicaldefence_austraits <- definitions_physicaldefence %>% filter(original_source == "austraits") %>% filter(valid_yn == 1) %>% mutate(original_value, hairs, spines, .keep = "none")
+
+data_austraits_physical <- bind_rows(data_austraits_physicaldef, data_austraits_spines)
+
+data_austraits_physical <- left_join(data_austraits_physical, definitions_physicaldefence_austraits, by = c("value" = "original_value"))
+
+rm(definitions_physicaldefence_austraits)
+```
+
+```{r}
+data_austraits_physical <- data_austraits_physical %>% group_by(taxon_name) %>% 
+  summarise(hairs = ifelse(all(is.na(hairs)), NA, ifelse(sum(hairs, na.rm=TRUE) > 0, 1, 0)), 
+            spines = ifelse(all(is.na(spines)), NA, ifelse(sum(spines, na.rm=TRUE) > 0, 1, 0)))
+
+colnames(data_austraits_physical)[1] <- "AccSpeciesName"
+```
+
+##CPTD
+read in file containing SLA and grab the context based on the main lookup table prepared beforehand
+```{r}
+cptd_def <- read.csv("./data/ChinaPlantTraitsDatabaseV2/Morphometric traits.csv")
+
+cptd_def <- cptd_def %>% filter(SAMPLE.ID %in% cptd_main$SAMPLE.ID)
+
+cptd_def <- left_join(cptd_def, cptd_main, by = join_by(SAMPLE.ID))
+
+colnames(cptd_def) #print colnames to select relevent ones
+```
+
+#take only defence traits (seems to be all physical)
+```{r}
+cptd_def_hair <- mutate(cptd_def, Leaf.hairs, Leaf.pubescence, canonicalName, .keep = "none")
+cptd_def_spine <- mutate(cptd_def, Leaf.spines, Leaf.thorns, Stem.spines, Stem.thorns, canonicalName, .keep = "none")
+```
+
+force all relevant columns to be binary
+```{r}
+for (i in 1:2){
+cptd_def_hair[i] <- if_else(cptd_def_hair[i] == "no" | cptd_def[i] == "NO", 0, 1)
+}
+
+for (i in 1:4){
+cptd_def_spine[i] <- if_else(cptd_def_spine[i] == "no" | cptd_def[i] == "NO", 0, 1)
+  }
+```
+
+omit NA rows
+```{r}
+cptd_def_hair <- na.omit(cptd_def_hair)
+cptd_def_spine <- na.omit(cptd_def_spine)
+```
+
+
+Sum physical defences (anything more than 1 is counted as binary yes)
+ifelse(all(is.na(hairs)), NA, ifelse(sum(hairs, na.rm=TRUE) > 0, 1, 0)
+hair
+```{r}
+cptd_def_hair$hairs <- rowSums(cptd_def_hair[,1:2])
+
+cptd_def_hairs <- cptd_def_hair %>% group_by(canonicalName) %>% summarise(hairs = ifelse(sum(hairs) > 0, 1, 0))
+
+colnames(cptd_def_hair)[1] <- "AccSpeciesName"
+
+```
+
+spines
+```{r}
+cptd_def_spine$spines <- rowSums(cptd_def_spine[,1:2])
+
+cptd_def_spine <- cptd_def_spine %>% group_by(canonicalName) %>% summarise(spines = ifelse(sum(spines) > 0, 1, 0))
+
+colnames(cptd_def_spine)[1] <- "AccSpeciesName"
+```
+
+join by species
+```{r}
+cptd_def <- left_join(cptd_def_hair, cptd_def_spine, by = "AccSpeciesName")
+```
+
+```{r}
+data_temp_physical <- bind_rows(data_try_physical, data_austraits_physical, cptd_def)%>% group_by(AccSpeciesName) %>% 
+  summarise(hairs = ifelse(all(is.na(hairs)), NA, ifelse(sum(hairs, na.rm=TRUE) > 0, 1, 0)), 
+            spines = ifelse(all(is.na(spines)), NA, ifelse(sum(spines, na.rm=TRUE) > 0, 1, 0)))
+
+rm(definitions_physicaldefence, data_try_physical, data_austraits_physical, temp, cptd_def, i)
+
+colnames(data_temp_physical)[1] <- "canonicalName"
+
+data_plant <- left_join(data_plant, data_temp_physical)
+
+rm(data_temp_physical)
+```
+
+#Plant defences (chemical)
+
+##TRY
+Get numerical evidence of defences
+```{r}
+data_try_chem_num <- data_try %>% 
+  filter(TraitID == 333 | #ash
+           TraitID == 1184) %>% #latex
+  filter(SpeciesName %in% species_list)
+```
+
+We found no records of ash or latex that match our species list.
+```{r}
+rm(data_try_chem_num)
+```
+
+
+Get categorical evidence of defences
+```{r}
+data_try_chem_cat <- data_try %>% 
+  filter(TraitID == 346 | #general chemical defences
+           TraitID == 835) %>%  #bark secondary (latex, slime, etc)
+  filter(SpeciesName %in% species_list)
+```
+
+Add chemical defence references to reference table 
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_try_chem_cat$Reference), secondary = "try"))
+```
+
+Go through the categories of plant defence
+```{r}
+definitions_try_chem_cat <- data_try_chem_cat %>% count(OrigValueStr) %>% arrange(desc(n))
+
+write_csv(definitions_try_chem_cat, "./output/definitions_try_chem_cat.csv")
+rm(definitions_try_chem_cat)
+```
+
+Read categorical categories back in
+```{r}
+definitions_try_chem_cat <- read_csv("./data/trait_definitions/definitions_chemicaldefence.csv")
+
+definitions_try_chem_cat <- definitions_try_chem_cat %>% filter(original_source == "try") %>% filter(valid_yn == 1) %>% mutate(original_value, defence_yn, .keep = "none")
+
+data_try_chem_cat <- left_join(data_try_chem_cat, definitions_try_chem_cat, by = c("OrigValueStr" = "original_value"))
+
+rm(definitions_try_chem_cat)
+```
+
+For each species, assign chemical defences as 1 if at least try record finds a chemical defence, 0 if there were tests for chemical defences but none were found
+```{r}
+data_try_chem_cat <- data_try_chem_cat %>% group_by(AccSpeciesName) %>% summarise(defence_yn = max(defence_yn))
+
+colnames(data_try_chem_cat)[2] <- "chemical_defence"
+```
+##AusTraits
+```{r}
+data_austraits_ash <- extract_trait(austraits, "leaf_ash_content_per_dry_mass
+")[["traits"]] %>% filter(taxon_name %in% species_list)
+
+data_austraits_ash
+
+rm(data_austraits_ash)
+```
+No austraits ash content 
+
+Add chemical defence to data_plant
+```{r}
+data_plant <- left_join(data_plant, data_try_chem_cat, by = c("canonicalName" = "AccSpeciesName"))
+
+#data_plant <- rows_patch(data_plant, data_try_chem_num, unmatched = "ignore") #update defences with numerical evidence
+
+rm(data_try_chem_cat) #note to add numerical to rm list hereif values are found
+```
+
+
+#Combined defence
+
+```{r}
+data_plant$defence <- pmax(data_plant$physical_defence, data_plant$chemical_defence, na.rm = TRUE)
+```
+
+#UNIMPLEMENTED Growth Rate (basic, lots of consideration needs to be done about transformations...)
+##TRY
+
+read growth rate traits
+```{r}
+data_try_growth <- data_try %>% 
+  filter(TraitID == 587 | #growth rate
+           TraitID == 77) %>% #relative growth rate
+  filter(SpeciesName %in% species_list)
+```
+
+create a list of how growth rate is measured
+```{r}
+unique(data_try_growth$DataName)
+
+unique(data_try_growth$OriglName)
+definitions_try_growth <- data_try_growth %>% group_by(OriglName, OrigUnitStr, Comment, Reference) %>% summarise(n = n())
+
+write_csv(definitions_try_growth, "./output/definitions_try_growth.csv")
+rm(definitions_try_growth)
+```
+
+reload in definitions with manual info on how to unify measurements
+Note that we also check references to try remove relative growth rate of seedlings.
+
+##AusTraits
+```{r}
+
+```
+
+#UNIMPLEMENTED Growth Rate (time to maturity)
+##TRY
+```{r}
+data_try_maturity <- data_try %>% filter(TraitID == 155) %>% filter(SpeciesName %in% species_list)
+
+unique(data_try_maturity$OrigValueStr)
+unique(data_try_maturity$OriglName)
+unique(data_try_maturity$OrigUnitStr)
+unique(data_try_maturity$DataName)
+```
+
+There are numeric values alongside ranges. There are also a variety of units that need to be converted to years, including some unlabelled ones and some values that are very likely days (eg. 161).
+
+We'll also use the minimum ranges.
+
+First exclude resprouts
+```{r}
+data_try_maturity <- data_try_maturity %>% filter(DataName != "Age of maturity of resprouts")
+```
+
+Check the number of unique combinations of columns that could tell us what the units are
+```{r}
+definitions_try_maturity <- data_try_maturity %>% group_by(DataName, OriglName, OrigValueStr, OrigUnitStr, Comment) %>% summarise(n = n()) %>% arrange(n)
+
+write_csv(definitions_try_maturity, "./output/definitions_try_maturity.csv")
+```
+
+Save references to table 
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_try_maturity$Reference), secondary = "try"))
+```
+
+
+Reload and append the manually determined transformation for each combination
+
+```{r}
+definitions_try_maturity <- read_csv("./data/trait_definitions/definitions_age_to_maturity.csv") %>% filter(valid_yn == 1)
+```
+
+Transform all to years
+```{r}
+definitions_try_maturity$manual_trans_num[definitions_try_maturity$manual_trans == "year"] <- 1
+definitions_try_maturity$manual_trans_num[definitions_try_maturity$manual_trans == "month"] <- 1/12
+definitions_try_maturity$manual_trans_num[definitions_try_maturity$manual_trans == "week"] <- 7/365 #sorry no leap years
+definitions_try_maturity$manual_trans_num[definitions_try_maturity$manual_trans == "day"] <- 1/365 #sorry no leap years
+  
+definitions_try_maturity$years_to_maturity <- definitions_try_maturity$new_untransformed_value* definitions_try_maturity$manual_trans_num
+
+definitions_try_maturity <- definitions_try_maturity %>% mutate(DataName, OriglName, OrigValueStr,OrigUnitStr, years_to_maturity, .keep = "none")
+```
+
+join transformed and cleaned data back to data_try_maturity
+
+```{r}
+data_try_maturity <- data_try_maturity %>% left_join(definitions_try_maturity)
+
+rm(definitions_try_maturity)
+```
+
+Look for records that did not join and try to fix them
+```{r}
+temp <- data_try_maturity %>% filter(is.na(years_to_maturity))
+```
+
+I suspect that the use of excel to look through the definitions ruined everything, most of the errors include a dash that might be turned into a date.
+
+We'll do this in R then.
+
+```{r}
+temp <- temp %>% #filter out records that don't really make sense
+  filter(DatasetID != "481") #no records?
+```
+
+```{r}
+temp_edits <- data_frame(OrigValueStr = unique(temp$OrigValueStr), new = NA)
+
+temp_edits
+```
+
+```{r}
+temp_edits$years_to_maturity <- c("1", "6", "1", "2", "5", "0.115", "0.115", "0.46", "0.23", "20", "0.5", "1")
+
+temp <- temp[, 1:29]
+
+temp <- left_join(temp, temp_edits)
+
+temp$years_to_maturity <- as.double(temp$years_to_maturity)
+
+temp <- mutate(temp, ObservationID, years_to_maturity, .keep = "none")
+
+data_try_maturity <- rows_patch(data_try_maturity, temp, by = "ObservationID", unmatched = "ignore")
+```
+
+Now that all the NAs are sorted, take the minimum year_to_maturity for each species
+
+```{r}
+data_try_maturity <- data_try_maturity %>% group_by(SpeciesName) %>% summarise(years_to_maturity = min(years_to_maturity))
+
+rm(temp, temp_edits)
+```
+
+##Austraits
+```{r}
+data_austraits_maturity <- extract_trait(austraits, 
+"reproductive_maturity")[["traits"]] %>% 
+  filter(taxon_name %in% species_list)%>% #in list
+  filter(taxon_name %in% data_try_maturity$SpeciesName == F) %>% #not in try
+  filter(dataset_id != "Cheal_2017") #exclude fire resprouting data
+```
+
+Save references to table
+```{r}
+reference_table <- bind_rows(reference_table, data.frame(primary = unique(data_austraits_maturity$dataset_id), secondary = "austraits"))
+```
+
+Data is organised into range categories. We want to take the minimum of each range.
+For the record that is less than one year, we could not take zero. Instead we took the center of the range and went with 0.5
+```{r}
+data_austraits_maturity <- data_austraits_maturity %>% mutate(taxon_name, years_to_maturity = c(1, 5, 5, 0.5), .keep = "none") #manually take minimum because there were only 4 records.
+
+colnames(data_austraits_maturity)[1] <- "canonicalName"
+```
+
+Append to data_plant
+```{r}
+data_plant <- left_join(data_plant, data_try_maturity, by = c("canonicalName" = "SpeciesName"))
+
+data_plant <- rows_patch(data_plant, data_austraits_maturity, unmatched = "ignore")
+```
+
+```{r}
+rm(data_austraits_maturity, data_try_maturity)
+```
+
+#Growth Form and life history
+
+##TRY
+
+read in data in chunks because it is too big and filter by species list
+```{r}
+source("./R/partial_rtry_import.R")
+source("./R/nrow_rtry_import.R")
+```
+
+```{r}
+nrow_rtry_import("./data/TRY/additional/34110.txt")
+```
+
+25334245 records
+01000000
+let's add them 1000000 at a time with filtering in between (please change code to read smaller chunks if you are running 32bit)
+
+```{r}
+rm(data_try_34110)
+```
+
+```{r}
+for (i in 1:25) {
+  data_temp <- partial_rtry_import("./data/TRY/additional/34110.txt", 
+                                   nrows = 1000000, 
+                                   skip = (i-1)*1000000)
+  data_temp <- data_temp %>% filter(is.na(TraitID) == F) %>% #do not take metadata
+    filter(SpeciesName %in% species_list) #filter by species list
+  
+  if(exists("data_try_34110") == F) {
+    data_try_34110 = list()}
+  
+    data_try_34110[[i]] <- data_temp #add to list because it is faster
+  
+    rm(data_temp)
+    
+  return(data_try_34110)
+}
+```
+
+group based on species
+
+```{r}
+data_try_34110 <- do.call(rbind, data_try_34110)
+
+data_try_34110 <- data_try_34110 %>% 
+  group_by(SpeciesName, TraitName) %>% 
+  summarise(unique_values = paste(unique(OrigValueStr), collapse = ", ")) %>%
+  ungroup() %>%
+  pivot_wider(names_from = TraitName, values_from = unique_values)
+```
+
+```{r}
+data_try_growthlife <- data_try_34110
+
+colnames(data_try_growthlife) <- c("canonicalName", "try_growthform", "try_lifehistory")
+
+rm(data_try_34110)
+```
+
+
+##AusTraits
+
+growth form
+```{r}
+data_austraits_gf <- extract_trait(austraits, "plant_growth_form")[["traits"]] %>% filter(taxon_name %in% species_list)
+
+data_austraits_gf <- data_austraits_gf %>% group_by(taxon_name) %>% summarise(values = paste(unique(value), collapse = ", "))
+
+colnames(data_austraits_gf) <- c("canonicalName", "aus_growthform")
+```
+
+life history
+```{r}
+data_austraits_lh <- extract_trait(austraits, "life_history")[["traits"]] %>% filter(taxon_name %in% species_list)
+
+data_austraits_lh <- data_austraits_lh %>% group_by(taxon_name) %>% summarise(values = paste(unique(value), collapse = ", "))
+
+colnames(data_austraits_lh) <- c("canonicalName", "aus_lifehistory")
+```
+
+```{r}
+data_austraits_growthlife <- left_join(data_austraits_gf, data_austraits_lh)
+rm(data_austraits_lh, data_austraits_gf)
+```
+
+
+##CPTD
+
+load plant functional traits
+```{r}
+data_cptd_gflh <- read_csv("./data/ChinaPlantTraitsDatabaseV2/Plant functional types.csv")
+
+data_cptd_gflh <- left_join(data_cptd_gf, cptd_main, by = join_by("SAMPLE ID" == "SAMPLE.ID"))
+
+data_cptd_gflh <- data_cptd_gf %>% filter(!is.na(canonicalName))%>% group_by(canonicalName) %>% summarise(life_form = paste(unique(`Life form`), collapse = ", "),
+          phenology = paste(unique(`Plant phenology`), collapse = ", "))
+```
+
+```{r}
+colnames(data_cptd_gflh) <- c("canonicalName", "cptd_growthform", "cptd_lifehistory")
+```
+
+combine data
+```{r}
+data_gflh <- left_join(data_try_growthlife, data_austraits_growthlife, by = "canonicalName")
+data_gflh <- left_join(data_gflh, data_cptd_gflh, by = "canonicalName")
+```
+
+Save to manually compare and reload
+```{r}
+write_csv(data_gflh, "./output/data_growthformlifehistory.csv")
+
+data_growthformlifehistory <- read_csv("./output/data_growthformlifehistory_manual.csv")
+
+data_growthformlifehistory <- data_growthformlifehistory[, c(1, 5, 9)]
+data_growthformlifehistory$manual_lifehistory[data_growthformlifehistory$manual_lifehistory == "ap"] = NA #set undecided records to NA
+```
+
+append to data_plant
+
+```{r}
+data_plant <- left_join(data_plant, data_growthformlifehistory)
+```
+
+```{r}
+rm(data_austraits_growthlife, data_cptd_gflh, data_gflh, data_growthformlifehistory, data_try_growthlife)
+```
+
+#Online resources
+
+Add in manually collected online resources
+```{r}
+data_manual_addition <- read_csv("./data/database_traits_manual_resolved.csv")
+```
+
+##Update hairiness
+Update columns for hairs and spines
+```{r}
+data_plant <- rows_update(data_plant, data_manual_addition[,1:3], by = "canonicalName")
+```
+
+##Update clonality
+Update clonality but only for NAs (to preserve the additional obligately clonal data)
+```{r}
+addition_clonal <- mutate(data_manual_addition, canonicalName, clonal_cat, .keep = "none")
+
+addition_clonal$clonal_cat[addition_clonal$clonal_cat == 1] <- "possible"
+addition_clonal$clonal_cat[addition_clonal$clonal_cat == 0] <- "no"
+
+data_plant <- rows_patch(data_plant, addition_clonal, by = "canonicalName")
+
+rm(addition_clonal)
+```
+
+##Update annual/perennial status
+
+```{r}
+addition_lifehistory <- mutate(data_manual_addition, canonicalName, manual_lifehistory = annual_perennial_cat, .keep = "none")
+
+data_plant <- rows_patch(data_plant, addition_lifehistory, by = "canonicalName")
+
+data_plant$manual_lifehistory[data_plant$manual_lifehistory == "p"] <- "Perennial"
+data_plant$manual_lifehistory[data_plant$manual_lifehistory == "pa"] <- "Perennial"
+data_plant$manual_lifehistory[data_plant$manual_lifehistory == "a"] <- "Annual"
+
+rm(addition_lifehistory)
+```
+
+##Update growth form
+
+```{r}
+addition_growthform <- mutate(data_manual_addition, canonicalName, manual_growthform = woody_herbaceous_cat, .keep = "none")
+
+data_plant <- rows_patch(data_plant, addition_growthform, by = "canonicalName")
+
+data_plant$manual_growthform[data_plant$manual_growthform == "w"] <- "Woody"
+data_plant$manual_growthform[data_plant$manual_growthform == "h"] <- "Herbaceous"
+
+rm(addition_growthform)
+```
+
+Add in the biotic/abiotic categorisation of dispersal syndrome
+```{r}
+data_plant$dispersal_syndrome0 <- ifelse(data_plant$dispersal_syndrome1 == "zoochory", "biotic", "abiotic")
+```
+
+#Add antcheck
+```{r}
+antcheck <- read.csv("./data/antcheck.csv")
+
+antlist <- unique(antcheck$canonicalName[antcheck$antcheck == 1])
+
+data_plant$dispersal_syndrome2[data_plant$canonicalName %in% antlist] <- "myrmecochory"
+data_plant$dispersal_syndrome1[data_plant$canonicalName %in% antlist] <- "myrmecochory"
+
+rm(antcheck)
+```
+
+
+#Final filtering and formatting
+Note to include references in the database sources
+```{r}
+reference_table <- add_row(reference_table, primary = "Báez, S., Cayuela, L., Macía, M.J. et al. FunAndes – A functional trait database of Andean plants. Sci Data 9, 511 (2022). https://doi.org/10.1038/s41597-022-01626-6", secondary = "funandes") #add funandes reference
+reference_table <- add_row(reference_table, primary = "Wang, H., Harrison, S.P., Li, M. et al. The China plant trait database version 2. Sci Data 9, 769 (2022). https://doi.org/10.1038/s41597-022-01884-4", secondary = "cptd")#add CPTD reference
+
+reference_table <- distinct(reference_table) #remove duplicate entries
+```
+
+Keep data_plant with more data than we need just in case a request to expand the scope of analysis, but make species-based ERM summary out of only damage values
+
+```{r}
+traits_by_species <- data_plant %>% group_by(canonicalName) %>% filter(row_number() == 1)
+
+data_species_b <- data_plant %>% filter(response == "dmg")%>% filter(experiment_type == "b")
+
+data_species_c <- data_plant %>% filter(response == "dmg")%>% filter(experiment_type == "c")
+
+data_species_b <- data_species_b %>% filter(!is.na(canonicalName)) %>% group_by(canonicalName)%>% summarise(erm = mean(erm))
+
+data_species_c <- data_species_c %>% filter(!is.na(canonicalName)) %>% group_by(canonicalName)%>% summarise(erm = mean(erm)) 
+
+data_species_b <- left_join(data_species_b, traits_by_species[, 37:50])
+
+data_species_c <- left_join(data_species_c, traits_by_species[, 37:50])
+
+rm(traits_by_species)
+```
+
+```{r}
+rm(austraits, cptd_main, data_try)
+```
+
+```{r}
+data_species_b$hairs <- as.factor(data_species_b$hairs)
+data_species_c$hairs <- as.factor(data_species_c$hairs)
+
+data_species_b$spines <- as.factor(data_species_b$spines)
+data_species_c$spines <- as.factor(data_species_c$spines)
+```
+
+
+#Analysis
+
+##load in my palette
+```{r}
+mypal <- c("#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51")
+```
+
+
+##PILOT: How much variation in enemy release is explained by species
+```{r}
+anova(lm(erm ~ as_factor(canonicalName), data = data_plant[data_plant$response == "dmg", ]))
+
+summary(lm(erm ~ as_factor(canonicalName), data = data_plant[data_plant$response == "dmg", ]))[["adj.r.squared"]]
+```
+According to this pilot, around 36% of the variation in enemy release can be explained by the identity of the species being introduced (after adjustment). We can therefore expect that differences between the species (such as in traits) will play a meaningful role in determining enemy release.
+
+##SLA
+```{r}
+ggplot(data_species_b)+
+  geom_point(aes(x = mean_SLA, y = erm))
+
+lm_sla_b <- lm(erm ~ mean_SLA , data = data_species_b)
+
+plot(lm_sla_b)
+
+summary(lm_sla_b)
+```
+something is off with the residuals, investigate further
+
+```{r}
+check_normality(lm_sla_b)
+```
+
+```{r}
+ggplot()+
+  geom_qq(aes(sample = lm_sla_b$residuals)) +
+  geom_abline()
+densityPlot(lm_sla_b$residuals)
+```
+moderately thin tailed residuals with a positive skew
+
+Transform data as recommended by "Notes on the use of data transformations", (Osborne, 2002) (https://doi.org/10.7275/4vng-5608)
+
+```{r}
+lm_sla_b_alt <- lm(log(erm+1-min(data_species_b$erm)) ~ mean_SLA, data = data_species_b)
+plot(lm_sla_b_alt)
+check_normality(lm_sla_b_alt)
+summary(lm_sla_b_alt)
+```
+
+While the transformed model is more normal, it seems like some of the values fit even worse and does not tell us anything more about the relationship between sla and erm.
+
+```{r}
+graph_sla_b <- ggplot(data_species_b)+
+  geom_point(aes(x = mean_SLA, y = erm), colour = mypal[1]) +
+  theme_pubr() +
+  scale_x_continuous(name = "Specific Leaf Area (cm^2/g)",
+                     limits = c(0, 130),
+                     breaks = c(0, 20, 40, 60, 80, 100, 120)) +
+  scale_y_continuous(name = "Enemy Release Metric \n\n",
+                     limits = c(-3, 5))
+
+graph_sla_b
+```
+note 13 NA points
+
+
+```{r}
+ggplot(data_species_c)+
+  geom_point(aes(x = mean_SLA, y = erm))
+```
+
+
+```{r}
+lm_sla_c <- lm(erm ~ mean_SLA, data = data_species_c)
+plot(lm_sla_c)
+```
+Data are also ill distributed here at the edges but the residuals look fine this time
+
+```{r}
+check_model(lm_sla_c)
+check_model(lm_sla_c_alt)
+```
+
+
+
+```{r}
+summary(lm_sla_c)
+```
+
+```{r}
+lm_sla_c_alt <- lm(erm ~ log10(mean_SLA), data = data_species_c)
+lm_sla_b_alt <- lm(erm ~ log10(mean_SLA), data = data_species_b)
+plot(lm_sla_c_alt)
+plot(lm_sla_b_alt)
+
+summary(lm_sla_c_alt)
+summary(lm_sla_b_alt)
+```
+
+
+```{r}
+graph_sla_c <- ggplot(data_species_c)+
+  geom_point(aes(x = mean_SLA, y = erm), colour = mypal[5]) +
+  theme_pubr() +
+  scale_x_continuous(name = "Specific Leaf Area (cm^2/g)",
+                     limits = c(0, 130),
+                     breaks = c(0, 20, 40, 60, 80, 100, 120)) +
+  scale_y_continuous(name = "Enemy Release Metric \n\n",
+                     limits = c(-3, 5))+
+  stat_smooth(method = lm, formula = y ~log(x))
+
+graph_sla_c
+```
+note that there are quite a few NA points
+
+##HAIRS
+## Does enemy release differ in species with different types of defence?
+
+```{r}
+data_species_b %>% group_by(spines) %>% tally()
+data_species_c %>% group_by(spines) %>% tally()
+
+data_species_b %>% group_by(hairs) %>% tally()
+data_species_c %>% group_by(hairs) %>% tally()
+
+
+ggplot(data_species_b) +
+  geom_point(aes(x = as.factor(hairs):as.factor(spines), y = erm)) +
+  theme_pubr()
+
+ggplot(data_species_c) +
+  geom_point(aes(x = as.factor(hairs):as.factor(spines), y = erm)) +
+  theme_pubr()
+```
+
+We have very few records with both hairs and spines, not enough to consider the interactions properly or even to test biogeographic spines maybe.
+
+They say that 
+
+```{r}
+t.test(erm ~ as.factor(hairs), data = data_species_b)
+```
+
+```{r}
+t.test(erm ~ as.factor(hairs), data = data_species_b)
+```
+
+```{r}
+graph_hair_b <- data_species_b %>% filter(!is.na(hairs)) %>% ggplot() +
+  geom_boxplot(aes(x = hairs, y = erm), colour = mypal[2], fill = mypal[2], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = hairs, y = erm), colour = mypal[1], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_x_discrete(name = "",
+                   labels = c("Glabrous leaves", "Hairy leaves"))
+
+graph_hair_c <- data_species_c %>% filter(!is.na(hairs)) %>% ggplot() +
+  geom_boxplot(aes(x = hairs, y = erm), colour = mypal[4], fill = mypal[4], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = hairs, y = erm), colour = mypal[5], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_x_discrete(name = "",
+                   labels = c("Glabrous leaves", "Hairy leaves"))
+
+```
+
+##SPINE
+
+```{r}
+t.test(erm ~ as.factor(spines), data = data_species_b)
+```
+
+```{r}
+t.test(erm ~ as.factor(spines), data = data_species_b)
+```
+
+```{r}
+graph_spine_b <- data_species_b %>% filter(!is.na(spines)) %>% ggplot() +
+  geom_boxplot(aes(x = spines, y = erm), colour = mypal[2], fill = mypal[2], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = spines, y = erm), colour = mypal[1], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_x_discrete(name = "",
+                   labels = c("Spiny\nleaves or\nstems", "Spineless\nleaves and\nstems"))
+graph_spine_c <- data_species_c %>% filter(!is.na(spines)) %>% ggplot() +
+  geom_boxplot(aes(x = spines, y = erm), colour = mypal[4], fill = mypal[4], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = spines, y = erm), colour = mypal[5], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_x_discrete(name = "",
+                   labels = c("Spiny\nleaves or\nstems", "Spineless\nleaves and\nstems"))
+```
+
+##HERB/WOOD
+
+```{r}
+ggplot(data_species_b) +
+  geom_point(aes(x = manual_growthform, y = erm))
+```
+Need to filter out an NA but otherwise enough samples and distribution
+```{r}
+t.test(erm ~ ifelse(manual_growthform == "Woody", "Woody", "Herbaceous"), #if it is clonal
+         alternative = "two.sided", #are the groups different
+         data = data_species_b[is.na(data_species_b$manual_growthform) == F,])#exclude NAs
+```
+
+```{r}
+ggplot(data_species_c) +
+  geom_point(aes(x = manual_growthform, y = erm))
+```
+
+```{r}
+t.test(erm ~ ifelse(manual_growthform == "Woody", "Woody", "Herbaceous"), #if it is clonal
+         alternative = "two.sided", #are the groups different
+         data = data_species_c[is.na(data_species_c$manual_growthform) == F,])#exclude NAs
+```
+
+```{r}
+graph_herb_b <- data_species_b %>% filter(!is.na(manual_growthform)) %>% ggplot() +
+  geom_boxplot(aes(x = manual_growthform, y = erm), colour = mypal[2], fill = mypal[2], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = manual_growthform, y = erm), colour = mypal[1], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-3, 4.5)) +
+  scale_x_discrete(name = "")
+
+graph_herb_b
+
+graph_herb_c <- data_species_c %>% filter(!is.na(manual_growthform)) %>% ggplot() +
+  geom_boxplot(aes(x = manual_growthform, y = erm), colour = mypal[4], fill = mypal[4], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = manual_growthform, y = erm), colour = mypal[5], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-3, 4.5)) +
+  scale_x_discrete(name = "")
+
+graph_herb_c
+```
+herbaceous and woody species do not have significantly different biogeographic or community enemy release
+
+##ANNUAL/PERENNIAL
+ 
+```{r}
+ggplot(data_species_b) +
+  geom_point(aes(x = manual_lifehistory, y = erm))
+```
+
+```{r}
+t.test(erm ~ ifelse(manual_lifehistory == "Annual", "Annual", "Perennial"), #annual
+         alternative = "two.sided", #are the groups different
+         data = data_species_b)#biogeographic
+```
+
+```{r}
+ggplot(data_species_c) +
+  geom_point(aes(x = manual_lifehistory, y = erm))
+```
+
+```{r}
+t.test(erm ~ ifelse(manual_lifehistory == "Annual", "Annual", "Perennial"), #if it is annual
+         alternative = "two.sided", #are the groups different
+         data = data_species_c[is.na(data_species_c$manual_lifehistory) == F,])#exclude NAs
+```
+
+annual and perennial species do not experience different enemy release
+
+```{r}
+graph_ann_b <- data_species_b %>% filter(!is.na(manual_lifehistory)) %>% ggplot() +
+  geom_boxplot(aes(x = manual_lifehistory, y = erm), colour = mypal[2], fill = mypal[2], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = manual_lifehistory, y = erm), colour = mypal[1], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-3, 4.5)) +
+  scale_x_discrete(name = "")
+
+graph_ann_b
+
+graph_ann_c <- data_species_c %>% filter(!is.na(manual_lifehistory)) %>% ggplot() +
+  geom_boxplot(aes(x = manual_lifehistory, y = erm), colour = mypal[4], fill = mypal[4], alpha = 0.5, width = 0.6) + 
+  geom_point(aes(x = manual_lifehistory, y = erm), colour = mypal[5], alpha = 0.2) +
+  theme_pubr() +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-3, 4.5)) +
+  scale_x_discrete(name = "")
+
+graph_ann_c
+```
+
+##DISPERSAL SYNDROME
+
+First, how detailed can our categories be without data loss?
+
+```{r}
+table(data_species_b$dispersal_syndrome0, useNA = "ifany")
+table(data_species_b$dispersal_syndrome1, useNA = "ifany")
+table(data_species_b$dispersal_syndrome2, useNA = "ifany")
+```
+
+
+```{r}
+table(data_species_c$dispersal_syndrome0, useNA = "ifany")
+table(data_species_c$dispersal_syndrome1, useNA = "ifany")
+table(data_species_c$dispersal_syndrome2, useNA = "ifany")
+```
+
+We don't have enough differentiated zoochory records to justify using the most detailed level of classification (many values in zoochory_other). So we should stick with dispersal_syndrome1
+
+```{r}
+graph_dispersal_b <- data_species_b %>% filter(!is.na(dispersal_syndrome1)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = dispersal_syndrome1, y = erm), fill = mypal[2], colour = mypal[2], alpha = 0.5) + 
+  geom_point(aes(x = dispersal_syndrome1, y = erm), shape = 1, colour = mypal[1]) +
+  theme_pubr() + 
+  scale_x_discrete(name = "",
+                   labels = c("Unassisted", "Ant", "Water", "Wind", "Animal")) +
+  scale_y_continuous(name = "Enemy Release \n", 
+                     limits = c(-3, 5))
+
+graph_dispersal_b
+```
+
+
+```{r}
+lm_dispersal_b <- lm(erm ~ dispersal_syndrome1, data = data_species_b)
+
+car::Anova(lm_dispersal_b, data = data_species_b, type = 2)
+```
+species of different dispersal syndromes do not differ significantly in biogeographic enemy release
+
+```{r}
+graph_dispersal_c <- data_species_c %>% filter(!is.na(dispersal_syndrome1)) %>%
+ggplot() +
+  geom_boxplot(aes(x = dispersal_syndrome1, y = erm), fill = mypal[4], colour = mypal[4], alpha = 0.5) +   geom_point(aes(x = dispersal_syndrome1, y = erm), shape = 1, colour = mypal[5]) +theme_pubr() +
+    scale_x_discrete(name = "",
+                   labels = c("Unassisted", "Ant", "Water", "Wind", "Animal")) +
+  scale_y_continuous(name = "Enemy Release \n", 
+                     limits = c(-3, 5))
+
+graph_dispersal_c
+```
+
+```{r}
+lm_dispersal_c <- lm(erm ~ dispersal_syndrome1, data = data_species_c)
+
+car::Anova(lm_dispersal_c, data = data_species_c, type = 2)
+```
+
+nor do they differ in community enemy release
+
+##CLONAL
+```{r}
+data_species_b %>% group_by(clonal_cat) %>% tally
+data_species_c %>% group_by(clonal_cat) %>% tally
+
+ggplot(data_species_b) +
+  geom_point(aes(x = clonal_cat, y = erm)) +
+  theme_pubr()
+
+ggplot(data_species_c) +
+  geom_point(aes(x = clonal_cat, y = erm)) +
+  theme_pubr()
+```
+We found very few exclusively clonal species with enemy release records. Fortunately, we are asking whether species that can disperse clonally experience more enemy release, so we can group 'yes' in with 'possible' and exclude NAs.
+
+```{r}
+data_species_b$clonal_cat <- as.factor(data_species_b$clonal_cat)
+data_species_c$clonal_cat <- as.factor(data_species_c$clonal_cat)
+```
+
+is enemy release weaker in species that CAN reproduce clonally
+because we need to combine possible and yes records, we will test whether no records differ to others
+
+```{r}
+t.test(erm ~ ifelse(clonal_cat == "no", "nonclonal", "clonal"), #if it is clonal
+         alternative = "two.sided", #are the groups different
+         data = data_species_b[is.na(data_species_b$clonal_cat) == F,]) #exclude NAs
+```
+
+```{r}
+graph_clonal_b <- data_species_b %>% filter(!is.na(clonal_cat)) %>% mutate(clonal_yn = ifelse(clonal_cat == "no", "Seed\nexclusive", "Clonal\nreproducing"))%>%
+ggplot() +
+  geom_boxplot(aes(x = clonal_yn, y = erm), fill = mypal[2], colour = mypal[2], alpha = 0.5) +   
+  geom_point(aes(x = clonal_yn, y = erm), shape = 1, colour = mypal[1]) + theme_pubr() +
+  scale_x_discrete(name = "") +
+  scale_y_continuous(name = "Enemy Release \n\n", 
+                     limits = c(-3, 5))
+
+graph_clonal_b
+```
+
+```{r}
+t.test(erm ~ ifelse(clonal_cat == "no", "nonclonal", "clonal"), #if it is clonal
+         alternative = "two.sided", #are the groups different
+         data = data_species_c[is.na(data_species_c$clonal_cat) == F,]) #exclude NAs
+```
+
+enemy release did not significantly differ between clonal and nonclonal species for biogeographic or community enemy release
+
+```{r}
+graph_clonal_c <- data_species_b %>% filter(!is.na(clonal_cat)) %>% mutate(clonal_yn = ifelse(clonal_cat == "no", "Seed\nexclusive", "Clonal\nreproducing"))%>%
+ggplot() +
+  geom_boxplot(aes(x = clonal_yn, y = erm), fill = mypal[4], colour = mypal[4], alpha = 0.5) +   
+  geom_point(aes(x = clonal_yn, y = erm), shape = 1, colour = mypal[5]) + theme_pubr() +
+  scale_x_discrete(name = "") +
+  scale_y_continuous(name = "Enemy Release \n\n", 
+                     limits = c(-3, 5))
+
+graph_clonal_c
+```
+
+
+##Final all-traits model!
+```{r}
+lm_all_b <- lm(erm ~ mean_SLA + manual_lifehistory + manual_growthform + dispersal_syndrome1 + spines + hairs,  data = data_species_b)
+
+summary(lm_all_b)
+
+plot(lm_all_b)
+```
+
+
+```{r}
+car::Anova(lm_all_b, type = 2)
+
+parameters(lm_all_b)
+```
+that was horrifically overfitted, now let's try with community enemy release
+
+```{r}
+lm_all_c <- lm(erm ~ mean_SLA + manual_lifehistory + manual_growthform + dispersal_syndrome1 + spines + hairs,  data = data_species_c)
+
+summary(lm_all_c)
+
+plot(lm_all_c)
+```
+
+
+```{r}
+summary(lm_all_c)
+
+car::Anova(lm_all_c, type = 2)
+parameters(lm_all_c)
+```
+As before, the individual traits explain less than species
+```{r}
+check_collinearity(lm_all_c)
+```
+
+```{r}
+model_performance(lm(erm~canonicalName, data = data_plant))
+model_performance(lm_all_b)
+model_performance(lm_all_c)
+```
+
+
+#Code for publication-ready graphs
+
+##facet graphs and add figure number
+```{r}
+ann_per <- annotate_figure(fig.lab = "4)", fig.lab.face = "bold", fig.lab.size = 14,
+                                 ggarrange(ncol = 2, nrow = 1,
+                                           graph_dispersal_b,
+                                           graph_ann_c + rremove("ylab"),
+                                           labels = c("Biogeographic", "Community"), 
+                                           hjust = -1.2))
+
+ann_per
+```
+
+
+```{r}
+clonal <- annotate_figure(fig.lab = "6)", fig.lab.face = "bold", fig.lab.size = 14,
+                                 ggarrange(ncol = 2, nrow = 1,
+                                           graph_clonal_b,
+                                           graph_clonal_c + rremove("ylab"),
+                                           labels = c("Biogeographic", "Community"), 
+                                           hjust = -1.2))
+
+clonal
+```
+
+##half-width 300dpi
+```{r}
+ggexport(graph_sla_c_uncropped, res = 300, width = 1063, height = 1063*1, filename = "./output/ch4 figures/graph_sla_c_uncropped.tiff")
+```
+
+##full-width 300dpi
+
+```{r}
+ggexport(clonal , res = 300, width = 2244*1, height = 2244*0.5, filename = "./output/ch4 figures/clonal.tiff")
+```

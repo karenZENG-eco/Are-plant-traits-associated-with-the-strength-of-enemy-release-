@@ -1209,6 +1209,11 @@ reference_table <- add_row(reference_table, primary = "Wang, H., Harrison, S.P.,
 reference_table <- distinct(reference_table) #remove duplicate entries
 ```
 
+```{r}
+write.csv(reference_table, "./output/traits_references.csv")
+```
+
+
 Keep data_plant with more data than we need just in case a request to expand the scope of analysis, but make species-based ERM summary out of only damage values
 
 ```{r}
@@ -1286,10 +1291,10 @@ moderately thin tailed residuals with a positive skew
 Transform data as recommended by "Notes on the use of data transformations", (Osborne, 2002) (https://doi.org/10.7275/4vng-5608)
 
 ```{r}
-lm_sla_b_alt <- lm(log(erm+1-min(data_species_b$erm)) ~ mean_SLA, data = data_species_b)
-plot(lm_sla_b_alt)
-check_normality(lm_sla_b_alt)
-summary(lm_sla_b_alt)
+lm_sla_b_alt2 <- lm(log(erm+1-min(data_species_b$erm)) ~ mean_SLA, data = data_species_b)
+plot(lm_sla_b_alt2)
+check_normality(lm_sla_b_alt2)
+summary(lm_sla_b_alt2)
 ```
 
 While the transformed model is more normal, it seems like some of the values fit even worse and does not tell us anything more about the relationship between sla and erm.
@@ -1308,6 +1313,17 @@ graph_sla_b
 ```
 note 13 NA points
 
+```{r}
+graph_sla_b2 <- ggplot(data_species_b)+
+  geom_point(aes(x = log(mean_SLA), y = erm), colour = mypal[1]) +
+  theme_pubr() +
+  scale_x_continuous(name = expression(`Log Specific Leaf Area`~"(" * cm^2 * "/g)"),
+                     limits = c(0, 5)) +
+  scale_y_continuous(name = "Enemy Release Metric \n\n",
+                     limits = c(-3, 5))
+
+graph_sla_b2
+```
 
 ```{r}
 ggplot(data_species_c)+
@@ -1327,14 +1343,15 @@ check_model(lm_sla_c_alt)
 ```
 
 
-
 ```{r}
 summary(lm_sla_c)
 ```
 
+According to coauthor input, normality of data is more important.
 ```{r}
-lm_sla_c_alt <- lm(erm ~ log10(mean_SLA), data = data_species_c)
-lm_sla_b_alt <- lm(erm ~ log10(mean_SLA), data = data_species_b)
+lm_sla_c_alt <- lm(erm ~ log(mean_SLA), data = data_species_c)
+lm_sla_b_alt <- lm(erm ~ log(mean_SLA), data = data_species_b)
+
 plot(lm_sla_c_alt)
 plot(lm_sla_b_alt)
 
@@ -1344,22 +1361,21 @@ summary(lm_sla_b_alt)
 
 
 ```{r}
-graph_sla_c <- ggplot(data_species_c)+
-  geom_point(aes(x = mean_SLA, y = erm), colour = mypal[5]) +
+graph_sla_c2 <- ggplot(data_species_c)+
+  geom_point(aes(x = log(mean_SLA), y = erm), colour = mypal[5]) +
   theme_pubr() +
-  scale_x_continuous(name = "Specific Leaf Area (cm^2/g)",
-                     limits = c(0, 130),
-                     breaks = c(0, 20, 40, 60, 80, 100, 120)) +
+  scale_x_continuous(name = expression(`Log Specific Leaf Area`~"(" * cm^2 * "/g)"),
+                     limits = c(0, 5)) +
   scale_y_continuous(name = "Enemy Release Metric \n\n",
-                     limits = c(-3, 5))+
-  stat_smooth(method = lm, formula = y ~log(x))
+                     limits = c(-3, 5))
 
-graph_sla_c
+graph_sla_c2
 ```
+
+
 note that there are quite a few NA points
 
 ##HAIRS
-## Does enemy release differ in species with different types of defence?
 
 ```{r}
 data_species_b %>% group_by(spines) %>% tally()
@@ -1395,17 +1411,19 @@ graph_hair_b <- data_species_b %>% filter(!is.na(hairs)) %>% ggplot() +
   geom_boxplot(aes(x = hairs, y = erm), colour = mypal[2], fill = mypal[2], alpha = 0.5, width = 0.6) + 
   geom_point(aes(x = hairs, y = erm), colour = mypal[1], alpha = 0.2) +
   theme_pubr() +
-  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-2, 4)) +
   scale_x_discrete(name = "",
-                   labels = c("Glabrous leaves", "Hairy leaves"))
+                   labels = c("Non-Hairy leaves", "Hairy leaves"))
 
 graph_hair_c <- data_species_c %>% filter(!is.na(hairs)) %>% ggplot() +
   geom_boxplot(aes(x = hairs, y = erm), colour = mypal[4], fill = mypal[4], alpha = 0.5, width = 0.6) + 
   geom_point(aes(x = hairs, y = erm), colour = mypal[5], alpha = 0.2) +
   theme_pubr() +
-  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-2, 4)) +
   scale_x_discrete(name = "",
-                   labels = c("Glabrous leaves", "Hairy leaves"))
+                   labels = c("Non-Hairy leaves", "Hairy leaves"))
 
 ```
 
@@ -1416,7 +1434,7 @@ t.test(erm ~ as.factor(spines), data = data_species_b)
 ```
 
 ```{r}
-t.test(erm ~ as.factor(spines), data = data_species_b)
+t.test(erm ~ as.factor(spines), data = data_species_c)
 ```
 
 ```{r}
@@ -1424,16 +1442,18 @@ graph_spine_b <- data_species_b %>% filter(!is.na(spines)) %>% ggplot() +
   geom_boxplot(aes(x = spines, y = erm), colour = mypal[2], fill = mypal[2], alpha = 0.5, width = 0.6) + 
   geom_point(aes(x = spines, y = erm), colour = mypal[1], alpha = 0.2) +
   theme_pubr() +
-  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-2, 4)) +
   scale_x_discrete(name = "",
-                   labels = c("Spiny\nleaves or\nstems", "Spineless\nleaves and\nstems"))
+                   labels = c("Spinescent", "Non-Spinescent"))
 graph_spine_c <- data_species_c %>% filter(!is.na(spines)) %>% ggplot() +
   geom_boxplot(aes(x = spines, y = erm), colour = mypal[4], fill = mypal[4], alpha = 0.5, width = 0.6) + 
   geom_point(aes(x = spines, y = erm), colour = mypal[5], alpha = 0.2) +
   theme_pubr() +
-  scale_y_continuous(name = "Enemy Release \n\n") +
+  scale_y_continuous(name = "Enemy Release \n\n",
+                     limits = c(-2, 4)) +
   scale_x_discrete(name = "",
-                   labels = c("Spiny\nleaves or\nstems", "Spineless\nleaves and\nstems"))
+                   labels = c("Spinescent", "Non-Spinescent"))
 ```
 
 ##HERB/WOOD
@@ -1550,6 +1570,27 @@ table(data_species_c$dispersal_syndrome2, useNA = "ifany")
 
 We don't have enough differentiated zoochory records to justify using the most detailed level of classification (many values in zoochory_other). So we should stick with dispersal_syndrome1
 
+Update dispersal syndrome into short medium and long distance
+```{r}
+data_species_b$dispersal_syndrome_dist <- data_species_b$dispersal_syndrome1
+data_species_c$dispersal_syndrome_dist <- data_species_c$dispersal_syndrome1
+
+data_species_b$dispersal_syndrome_dist[data_species_b$dispersal_syndrome_dist == "autochory"] <- "Short"
+data_species_b$dispersal_syndrome_dist[data_species_b$dispersal_syndrome_dist == "myrmecochory"] <- "Short"
+data_species_b$dispersal_syndrome_dist[data_species_b$dispersal_syndrome_dist == "water"] <- "Long"
+data_species_b$dispersal_syndrome_dist[data_species_b$dispersal_syndrome_dist == "wind"] <- "Intermediate"
+data_species_b$dispersal_syndrome_dist[data_species_b$dispersal_syndrome_dist == "zoochory"] <- "Long"
+
+data_species_c$dispersal_syndrome_dist[data_species_c$dispersal_syndrome_dist == "autochory"] <- "Short"
+data_species_c$dispersal_syndrome_dist[data_species_c$dispersal_syndrome_dist == "myrmecochory"] <- "Short"
+data_species_c$dispersal_syndrome_dist[data_species_c$dispersal_syndrome_dist == "water"] <- "Long"
+data_species_c$dispersal_syndrome_dist[data_species_c$dispersal_syndrome_dist == "wind"] <- "Intermediate"
+data_species_c$dispersal_syndrome_dist[data_species_c$dispersal_syndrome_dist == "zoochory"] <- "Long"
+
+data_species_b$dispersal_syndrome_dist <- factor(data_species_b$dispersal_syndrome_dist, levels = c("Short", "Intermediate", "Long"))
+data_species_c$dispersal_syndrome_dist <- factor(data_species_c$dispersal_syndrome_dist, levels = c("Short", "Intermediate", "Long"))
+```
+
 ```{r}
 graph_dispersal_b <- data_species_b %>% filter(!is.na(dispersal_syndrome1)) %>%
   ggplot() +
@@ -1566,7 +1607,21 @@ graph_dispersal_b
 
 
 ```{r}
-lm_dispersal_b <- lm(erm ~ dispersal_syndrome1, data = data_species_b)
+graph_dispersal_b2 <- data_species_b %>% filter(!is.na(dispersal_syndrome_dist)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = dispersal_syndrome_dist, y = erm), fill = mypal[2], colour = mypal[2], alpha = 0.5) + 
+  geom_point(aes(x = dispersal_syndrome_dist, y = erm), shape = 1, colour = mypal[1]) +
+  theme_pubr() + 
+  scale_x_discrete(name = "Dispersal distance") +
+  scale_y_continuous(name = "Enemy Release \n", 
+                     limits = c(-3, 5))
+
+graph_dispersal_b2
+```
+
+
+```{r}
+lm_dispersal_b <- lm(erm ~ dispersal_syndrome_dist, data = data_species_b)
 
 car::Anova(lm_dispersal_b, data = data_species_b, type = 2)
 ```
@@ -1585,7 +1640,18 @@ graph_dispersal_c
 ```
 
 ```{r}
-lm_dispersal_c <- lm(erm ~ dispersal_syndrome1, data = data_species_c)
+graph_dispersal_c2 <- data_species_c %>% filter(!is.na(dispersal_syndrome_dist)) %>%
+ggplot() +
+  geom_boxplot(aes(x = dispersal_syndrome_dist, y = erm), fill = mypal[4], colour = mypal[4], alpha = 0.5) +   geom_point(aes(x = dispersal_syndrome_dist, y = erm), shape = 1, colour = mypal[5]) +theme_pubr() +
+    scale_x_discrete(name = "Dispersal distance") +
+  scale_y_continuous(name = "Enemy Release \n", 
+                     limits = c(-3, 5))
+
+graph_dispersal_c2
+```
+
+```{r}
+lm_dispersal_c <- lm(erm ~ dispersal_syndrome_dist, data = data_species_c)
 
 car::Anova(lm_dispersal_c, data = data_species_c, type = 2)
 ```
@@ -1702,26 +1768,28 @@ model_performance(lm_all_c)
 
 ##facet graphs and add figure number
 ```{r}
-ann_per <- annotate_figure(fig.lab = "4)", fig.lab.face = "bold", fig.lab.size = 14,
+dispersal2 <- annotate_figure(fig.lab = "5)", fig.lab.face = "bold", fig.lab.size = 14,
                                  ggarrange(ncol = 2, nrow = 1,
-                                           graph_dispersal_b,
-                                           graph_ann_c + rremove("ylab"),
+                                           graph_dispersal_b2,
+                                           graph_dispersal_c2 + rremove("ylab"),
                                            labels = c("Biogeographic", "Community"), 
                                            hjust = -1.2))
 
-ann_per
+dispersal2
 ```
 
-
+##facet wide
 ```{r}
-clonal <- annotate_figure(fig.lab = "6)", fig.lab.face = "bold", fig.lab.size = 14,
-                                 ggarrange(ncol = 2, nrow = 1,
-                                           graph_clonal_b,
-                                           graph_clonal_c + rremove("ylab"),
+hair_spine <- annotate_figure(fig.lab = "2)", fig.lab.face = "bold", fig.lab.size = 14,
+                                 ggarrange(ncol = 2, nrow = 2,
+                                           graph_hair_b,
+                                           graph_hair_c + rremove("ylab"),
+                                           graph_spine_b,
+                                           graph_spine_c + rremove("ylab"),
                                            labels = c("Biogeographic", "Community"), 
                                            hjust = -1.2))
 
-clonal
+hair_spine 
 ```
 
 ##half-width 300dpi
@@ -1732,5 +1800,5 @@ ggexport(graph_sla_c_uncropped, res = 300, width = 1063, height = 1063*1, filena
 ##full-width 300dpi
 
 ```{r}
-ggexport(clonal , res = 300, width = 2244*1, height = 2244*0.5, filename = "./output/ch4 figures/clonal.tiff")
+ggexport(hair_spine , res = 300, width = 2244*1, height = 2244*0.8, filename = "./output/ch4 figures/hair_spine.tiff")
 ```
